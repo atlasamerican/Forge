@@ -1,0 +1,21 @@
+# Forge Configuration
+# Copy this file to ~/.config/forge/config.toml and fill in your values.
+#
+#   cp config.toml.example ~/.config/forge/config.toml
+
+# Default model (local Ollama model or cloud model with prefix)
+# model = "deepseek-coder:33b"
+# model = "gemini:gemini-2.0-flash"
+
+# Ollama server (default: http://localhost:11434)
+# ollama_host = "http://localhost:11434"
+
+# Auto-approve safe commands without prompting (default: false)
+# auto_approve = false
+
+# Command timeout in seconds (default: 60)
+# command_timeout = 60
+
+[api_keys]
+# Google Gemini API key (get one at https://aistudio.google.com/apikey)
+# gemini = "your-gemini-api-key-here"

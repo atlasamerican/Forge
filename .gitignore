@@ -1,0 +1,20 @@
+# Python/IDE generated
+__pycache__/
+*.pyc
+*.pyo
+.idea/
+.vscode/
+*.egg-info/
+
+# Virtual environment
+.venv/
+
+# Build artifacts
+build/
+dist/
+
+# Local config (contains API keys — NEVER commit)
+config.toml
+
+# Logs
+*.log
