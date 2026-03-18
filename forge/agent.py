@@ -20,6 +20,7 @@ from enum import Enum
 from typing import Any
 
 from forge.config import ForgeConfig
+from forge.instructions import InstructionManager
 from forge.llm import LLMClient, StreamChunk
 from forge.project import ProjectMemory
 from forge.safety import RiskLevel, SafetyResult, check_command
@@ -77,6 +78,7 @@ def build_system_prompt(
     config: ForgeConfig,
     shell: ShellManager,
     project: ProjectMemory | None = None,
+    instruction_mgr: InstructionManager | None = None,
 ) -> str:
     """Build the system prompt with tool definitions and context."""
     project_context = ""
@@ -85,6 +87,16 @@ def build_system_prompt(
         if ctx:
             project_context = f"\n\n{ctx}"
 
+    instructions_section = ""
+    references_section = ""
+    if instruction_mgr:
+        inst_text = instruction_mgr.format_instructions_for_prompt()
+        if inst_text:
+            instructions_section = f"\n\n{inst_text}"
+        ref_text = instruction_mgr.format_references_for_prompt()
+        if ref_text:
+            references_section = f"\n\n{ref_text}"
+
     return f"""You are Forge, a local AI coding assistant running in a terminal on the user's machine.
 You help the user build, debug, and modify programs by writing code and running commands.
 
@@ -92,7 +104,7 @@ You help the user build, debug, and modify programs by writing code and running 
 - OS: {platform.system()} ({platform.freedesktop_os_release().get('NAME', 'Linux') if platform.system() == 'Linux' else platform.platform()})
 - Python: {sys.version.split()[0]}
 - Working directory: {shell.cwd}
-- Active model: {config.model}{project_context}
+- Active model: {config.model}{project_context}{instructions_section}{references_section}
 
 ## Tools
 You have access to tools to interact with the user's system. To use a tool, output a <tool_call> tag containing valid JSON:
@@ -165,10 +177,14 @@ class Agent:
         self.project: ProjectMemory | None = ProjectMemory.load(config.cwd)
         self._session_tool_calls: list[ToolCall] = []  # track calls per request
 
+        # Load environment instructions
+        proj_dir = self.project.directory if self.project else None
+        self.instruction_mgr = InstructionManager(project_dir=proj_dir)
+
         # Initialize with system prompt
         self.messages.append({
             "role": "system",
-            "content": build_system_prompt(config, self.shell, self.project),
+            "content": build_system_prompt(config, self.shell, self.project, self.instruction_mgr),
         })
         self._stream_parse_buffer = ""
 
@@ -189,7 +205,7 @@ class Agent:
         """Refresh the system prompt (e.g. after CWD change)."""
         self.messages[0] = {
             "role": "system",
-            "content": build_system_prompt(self.config, self.shell, self.project),
+            "content": build_system_prompt(self.config, self.shell, self.project, self.instruction_mgr),
         }
 
     def change_model(self, model: str) -> None:
@@ -224,6 +240,9 @@ class Agent:
         """Load project memory for a directory (None if no project file exists)."""
         d = directory or self.shell.cwd
         self.project = ProjectMemory.load(d)
+        # Reload instructions for the new project directory
+        proj_dir = self.project.directory if self.project else None
+        self.instruction_mgr.set_project_dir(proj_dir)
         self.update_system_prompt()
 
     def init_project(self, directory: str | None = None) -> ProjectMemory:

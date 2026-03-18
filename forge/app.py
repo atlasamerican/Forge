@@ -19,6 +19,7 @@ from textual.reactive import reactive
 from textual.screen import ModalScreen
 from textual.widgets import (
     Button,
+    Checkbox,
     Footer,
     Header,
     Input,
@@ -263,7 +264,95 @@ class APIKeyModal(ModalScreen[str | None]):
         self.dismiss(None)
 
 
-# ─── Custom Messages ─────────────────────────────────────────────────────
+# ─── Add Instruction Modal ───────────────────────────────────────────
+
+
+class AddInstructionModal(ModalScreen[tuple[str, str] | None]):
+    """Modal dialog to add a new custom instruction."""
+
+    BINDINGS = [
+        Binding("escape", "cancel", "Cancel"),
+    ]
+
+    DEFAULT_CSS = """
+    AddInstructionModal {
+        align: center middle;
+    }
+
+    #addinst-dialog {
+        width: 80;
+        max-width: 90%;
+        height: auto;
+        max-height: 28;
+        border: thick $accent;
+        background: $surface;
+        padding: 1 2;
+    }
+
+    #addinst-title {
+        text-style: bold;
+        color: $accent;
+        margin-bottom: 1;
+    }
+
+    #addinst-name {
+        margin-bottom: 1;
+    }
+
+    #addinst-text {
+        height: 8;
+        margin-bottom: 1;
+    }
+
+    #addinst-buttons {
+        height: 3;
+        align: center middle;
+    }
+
+    #addinst-buttons Button {
+        margin: 0 1;
+    }
+    """
+
+    def __init__(self, prefill_title: str = "") -> None:
+        super().__init__()
+        self._prefill_title = prefill_title
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="addinst-dialog"):
+            yield Label("📝 Add Environment Instruction", id="addinst-title")
+            yield Input(
+                placeholder="Instruction title (e.g. 'Use TypeScript')",
+                value=self._prefill_title,
+                id="addinst-name",
+            )
+            yield TextArea(id="addinst-text")
+            yield Label("[dim]Describe what the AI should do or avoid. Supports multi-line text, HTML, templates, etc.[/]")
+            with Horizontal(id="addinst-buttons"):
+                yield Button("Save", variant="success", id="btn-addinst-save")
+                yield Button("Cancel", variant="default", id="btn-addinst-cancel")
+
+    def on_mount(self) -> None:
+        self.query_one("#addinst-name", Input).focus()
+
+    @on(Button.Pressed, "#btn-addinst-save")
+    def on_save(self) -> None:
+        title = self.query_one("#addinst-name", Input).value.strip()
+        text = self.query_one("#addinst-text", TextArea).text.strip()
+        if title and text:
+            self.dismiss((title, text))
+        else:
+            self.notify("Both title and text are required.", severity="warning")
+
+    @on(Button.Pressed, "#btn-addinst-cancel")
+    def on_cancel_btn(self) -> None:
+        self.dismiss(None)
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
+# ─── Custom Messages ───
 
 
 class AgentEventMessage(Message):
@@ -483,6 +572,36 @@ class ForgeApp(App):
         margin: 0;
     }
 
+    #instructions-panel {
+        height: auto;
+        max-height: 16;
+        padding: 0 1;
+        display: none;
+        border-top: solid $accent-darken-2;
+    }
+
+    #instructions-panel Label {
+        padding: 0;
+        width: auto;
+    }
+
+    #instructions-panel Checkbox {
+        height: 1;
+        padding: 0;
+        margin: 0;
+    }
+
+    #instructions-header {
+        height: auto;
+        margin-bottom: 0;
+    }
+
+    #instructions-header Button {
+        min-width: 8;
+        height: 3;
+        margin: 0 1 0 0;
+    }
+
     #chat-log {
         height: 1fr;
         border: solid $primary;
@@ -639,6 +758,22 @@ class ForgeApp(App):
                     ),
                 )
                 yield proj_btn
+                inst_btn = Button(
+                    self._instructions_button_label(),
+                    id="instructions-btn",
+                    tooltip=(
+                        "Environment Instructions — behavioral guidelines for the AI\n"
+                        "\n"
+                        "Click to toggle the instructions panel.\n"
+                        "Enable/disable rules the AI should follow."
+                    ),
+                )
+                yield inst_btn
+            with Vertical(id="instructions-panel"):
+                with Horizontal(id="instructions-header"):
+                    yield Button("+ Add", variant="success", id="btn-add-instruction")
+                    yield Button("📁 Refs", variant="default", id="btn-show-refs")
+                yield Vertical(id="instructions-list")
         yield Static("", id="resource-bars")
         yield Static("", id="active-prompt")
         yield TrackingRichLog(id="chat-log", wrap=True, highlight=True, markup=True)
@@ -666,6 +801,9 @@ class ForgeApp(App):
             log.write(line)
 
         self.query_one("#input-field", ChatInput).focus()
+
+        # Populate instructions panel checkboxes
+        self._refresh_instructions_panel()
 
         # Start resource monitor timer (updates every 2 seconds)
         self.set_interval(2.0, self._update_resources)
@@ -764,7 +902,88 @@ class ForgeApp(App):
             ProjectMemory.add_to_gitignore(directory)
             log.write("[bold green]✓[/] Added [bold].forge-memory/[/] to .gitignore")
 
-    # ─── Model Dropdown ───────────────────────────────────────────────────────────
+    # ─── Instructions Panel ───────────────────────────────────────────────────
+
+    def _instructions_button_label(self) -> str:
+        mgr = getattr(self, 'agent', None) and self.agent.instruction_mgr
+        count = mgr.enabled_count() if mgr else 0
+        return f"📋 {count} Rules"
+
+    def _refresh_instructions_panel(self) -> None:
+        """Rebuild the checkbox list in the instructions panel."""
+        try:
+            container = self.query_one("#instructions-list", Vertical)
+        except NoMatches:
+            return
+        container.remove_children()
+        mgr = self.agent.instruction_mgr
+        for inst in mgr.instructions:
+            cb = Checkbox(
+                inst.title,
+                value=inst.enabled,
+                id=f"inst-cb-{inst.id}",
+            )
+            cb.tooltip = inst.text[:200]
+            container.mount(cb)
+        # Update button label
+        try:
+            self.query_one("#instructions-btn", Button).label = self._instructions_button_label()
+        except NoMatches:
+            pass
+
+    @on(Button.Pressed, "#instructions-btn")
+    def on_instructions_btn_pressed(self) -> None:
+        """Toggle the instructions panel visibility."""
+        try:
+            panel = self.query_one("#instructions-panel", Vertical)
+            if panel.styles.display == "none":
+                panel.styles.display = "block"
+                self._refresh_instructions_panel()
+            else:
+                panel.styles.display = "none"
+        except NoMatches:
+            pass
+
+    @on(Checkbox.Changed)
+    def on_instruction_checkbox_changed(self, event: Checkbox.Changed) -> None:
+        """Handle instruction checkbox toggle."""
+        if self._updating_widgets:
+            return
+        cb_id = event.checkbox.id or ""
+        if not cb_id.startswith("inst-cb-"):
+            return
+        inst_id = cb_id[8:]  # strip "inst-cb-" prefix
+        mgr = self.agent.instruction_mgr
+        mgr.set_enabled(inst_id, event.value)
+        self.agent.update_system_prompt()
+        try:
+            self.query_one("#instructions-btn", Button).label = self._instructions_button_label()
+        except NoMatches:
+            pass
+
+    @on(Button.Pressed, "#btn-add-instruction")
+    def on_add_instruction_btn(self) -> None:
+        """Open the add-instruction modal."""
+        def on_result(result: tuple[str, str] | None) -> None:
+            if result:
+                title, text = result
+                scope = "project" if self.agent.project else "global"
+                self.agent.instruction_mgr.add(title, text, scope=scope)
+                self.agent.update_system_prompt()
+                self._refresh_instructions_panel()
+                log = self.query_one("#chat-log", RichLog)
+                log.write(f"[bold green]✓ Instruction added:[/] {title} ({scope})")
+        self.push_screen(AddInstructionModal(), callback=on_result)
+
+    @on(Button.Pressed, "#btn-show-refs")
+    def on_show_refs_btn(self) -> None:
+        """Show reference documents in the chat log."""
+        log = self.query_one("#chat-log", RichLog)
+        display = self.agent.instruction_mgr.format_references_display()
+        for line in display.split("\n"):
+            log.write(line)
+
+    # ─── Model Dropdown ─────────────────────────────────────────────────────────
 
     def _get_api_key_for_provider(self, provider: str) -> str:
         """Return the configured API key for the given cloud provider."""
@@ -1253,6 +1472,9 @@ class ForgeApp(App):
         elif cmd == "/project":
             self._handle_project_command(arg, log)
 
+        elif cmd in ("/instructions", "/inst", "/rules"):
+            self._handle_instructions_command(arg, log)
+
         elif cmd == "/help":
             log.write(
                 "[bold cyan]Forge Commands:[/]\n"
@@ -1269,6 +1491,11 @@ class ForgeApp(App):
                 "  [bold]/project init <path>[/] — Create a project for a specific directory\n"
                 "  [bold]/project clear[/]     — Reset project memory\n"
                 "  [bold]/project rename[/]    — Set custom project name\n"
+                "  [bold]/instructions[/]      — List environment instructions (also /inst, /rules)\n"
+                "  [bold]/instructions toggle <#>[/] — Enable/disable an instruction\n"
+                "  [bold]/instructions add[/]  — Add a new custom instruction\n"
+                "  [bold]/instructions remove <#>[/] — Remove a custom instruction\n"
+                "  [bold]/instructions refs[/] — List reference documents\n"
                 "  [bold]/temp[/]              — Show/set temperature (0.0-2.0)\n"
                 "  [bold]/ctx[/]               — Show/set context window size (tokens)\n"
                 "  [bold]/maxtokens[/]         — Show/set max output tokens\n"
@@ -1376,6 +1603,105 @@ class ForgeApp(App):
         else:
             log.write(f"[bold red]Unknown subcommand:[/] {subcmd}")
             log.write("Usage: /project [init [path] | clear | rename <name>]")
+
+    def _handle_instructions_command(self, arg: str, log: RichLog) -> None:
+        """Handle /instructions — list, toggle, add, remove instructions and refs."""
+        mgr = self.agent.instruction_mgr
+
+        if not arg:
+            display = mgr.format_display()
+            for line in display.split("\n"):
+                log.write(line)
+            return
+
+        sub_parts = arg.split(maxsplit=1)
+        subcmd = sub_parts[0].lower()
+        subarg = sub_parts[1].strip() if len(sub_parts) > 1 else ""
+
+        if subcmd == "toggle":
+            if not subarg:
+                log.write("[bold red]Usage:[/] /instructions toggle <number or title>")
+                return
+            inst = None
+            if subarg.isdigit():
+                inst = mgr.get_by_index(int(subarg))
+            if not inst:
+                inst = mgr.get_by_id_or_title(subarg)
+            if not inst:
+                log.write(f"[bold red]Instruction not found:[/] {subarg}")
+                return
+            new_state = mgr.toggle(inst.id)
+            self.agent.update_system_prompt()
+            self._refresh_instructions_panel()
+            state = "enabled" if new_state else "disabled"
+            log.write(f"[bold green]✓[/] [bold]{inst.title}[/] — {state}")
+
+        elif subcmd == "add":
+            # Open the modal, optionally pre-filling title from subarg
+            def on_result(result: tuple[str, str] | None) -> None:
+                if result:
+                    title, text = result
+                    scope = "project" if self.agent.project else "global"
+                    mgr.add(title, text, scope=scope)
+                    self.agent.update_system_prompt()
+                    self._refresh_instructions_panel()
+                    log.write(f"[bold green]✓ Instruction added:[/] {title} ({scope})")
+            self.push_screen(AddInstructionModal(prefill_title=subarg), callback=on_result)
+
+        elif subcmd == "remove":
+            if not subarg:
+                log.write("[bold red]Usage:[/] /instructions remove <number or title>")
+                return
+            inst = None
+            if subarg.isdigit():
+                inst = mgr.get_by_index(int(subarg))
+            if not inst:
+                inst = mgr.get_by_id_or_title(subarg)
+            if not inst:
+                log.write(f"[bold red]Instruction not found:[/] {subarg}")
+                return
+            if inst.builtin:
+                log.write(f"[bold yellow]Can't delete built-in instruction.[/] Use toggle to disable it.")
+                return
+            mgr.remove(inst.id)
+            self.agent.update_system_prompt()
+            self._refresh_instructions_panel()
+            log.write(f"[bold green]✓ Removed:[/] {inst.title}")
+
+        elif subcmd == "refs":
+            # /instructions refs [add|remove]
+            if not subarg:
+                display = mgr.format_references_display()
+                for line in display.split("\n"):
+                    log.write(line)
+                return
+            ref_parts = subarg.split(maxsplit=1)
+            ref_cmd = ref_parts[0].lower()
+            ref_arg = ref_parts[1].strip() if len(ref_parts) > 1 else ""
+
+            if ref_cmd == "add" and ref_arg:
+                path = os.path.abspath(os.path.expanduser(ref_arg))
+                scope = "project" if self.agent.project else "global"
+                doc = mgr.add_reference(path, scope=scope)
+                if doc:
+                    self.agent.update_system_prompt()
+                    log.write(f"[bold green]✓ Reference added:[/] {doc.name} ({scope})")
+                else:
+                    log.write(f"[bold red]File not found:[/] {path}")
+
+            elif ref_cmd == "remove" and ref_arg:
+                if mgr.remove_reference(ref_arg):
+                    self.agent.update_system_prompt()
+                    log.write(f"[bold green]✓ Reference removed:[/] {ref_arg}")
+                else:
+                    log.write(f"[bold red]Reference not found:[/] {ref_arg}")
+
+            else:
+                log.write("[bold red]Usage:[/] /instructions refs [add <path> | remove <name>]")
+
+        else:
+            log.write(f"[bold red]Unknown subcommand:[/] {subcmd}")
+            log.write("Usage: /instructions [toggle|add|remove|refs] ...")
 
     def _handle_model_command(self, arg: str, log: RichLog) -> None:
         """Handle /model — list installed models or switch by name/number."""
