@@ -84,23 +84,41 @@ CATEGORIES: dict[str, dict] = {
     "online": {
         "description": "Cloud API models — no local GPU needed, requires API key",
         "models": [
+            # Gemini
+            ModelEntry("gemini:gemini-2.5-flash", "cloud", 0.0,
+                       "Gemini 2.5 Flash — fast, controllable thinking, versatile (GA)"),
+            ModelEntry("gemini:gemini-2.5-pro", "cloud", 0.0,
+                       "Gemini 2.5 Pro — high-capability reasoning and coding (GA)"),
             ModelEntry("gemini:gemini-2.0-flash", "cloud", 0.0,
-                       "Fast and capable — great for coding tasks, free tier available"),
-            ModelEntry("gemini:gemini-2.0-flash-lite", "cloud", 0.0,
-                       "Fastest Gemini model — lightweight tasks and quick responses"),
-            ModelEntry("gemini:gemini-2.5-pro-preview-03-25", "cloud", 0.0,
-                       "Most capable — complex reasoning, large context window"),
-            ModelEntry("gemini:gemini-2.0-flash-thinking", "cloud", 0.0,
-                       "Extended thinking for complex problems — shows reasoning steps"),
-            ModelEntry("gemini:gemini-1.5-pro", "cloud", 0.0,
-                       "Strong all-rounder with 1M token context window"),
+                       "Gemini 2.0 Flash — fast and efficient for everyday tasks"),
+            # OpenAI
+            ModelEntry("openai:gpt-4o", "cloud", 0.0,
+                       "GPT-4o — OpenAI's flagship, strong reasoning and coding"),
+            ModelEntry("openai:gpt-4o-mini", "cloud", 0.0,
+                       "GPT-4o Mini — fast and cost-efficient for lighter tasks"),
+            ModelEntry("openai:gpt-4.1", "cloud", 0.0,
+                       "GPT-4.1 — latest model, enhanced coding and instruction following"),
+            ModelEntry("openai:gpt-4.1-mini", "cloud", 0.0,
+                       "GPT-4.1 Mini — balanced speed and capability"),
+            # Anthropic
+            ModelEntry("anthropic:claude-sonnet-4-20250514", "cloud", 0.0,
+                       "Claude Sonnet 4 — Anthropic's best balance of speed and intelligence"),
+            ModelEntry("anthropic:claude-haiku-3.5-20241022", "cloud", 0.0,
+                       "Claude Haiku 3.5 — fastest Claude, great for quick tasks"),
+            ModelEntry("anthropic:claude-opus-4-20250514", "cloud", 0.0,
+                       "Claude Opus 4 — most capable Claude for complex reasoning"),
         ],
     },
 }
 
 
 def get_installed_model_names() -> set[str]:
-    """Get set of installed Ollama model names."""
+    """Get set of installed Ollama model names.
+
+    Returns both the full tagged name (e.g. 'qwen2.5-coder:32b') and the
+    bare name without the tag (e.g. 'qwen2.5-coder') so that lookups work
+    regardless of whether the user includes the tag.
+    """
     try:
         result = subprocess.run(
             ["ollama", "list"],
@@ -110,7 +128,12 @@ def get_installed_model_names() -> set[str]:
         for line in result.stdout.strip().splitlines()[1:]:
             parts = line.split()
             if parts:
-                names.add(parts[0])
+                full = parts[0]
+                names.add(full)
+                # Also add bare name so "model" matches "model:latest"
+                bare = full.split(":")[0]
+                if bare and bare != full:
+                    names.add(bare)
         return names
     except (OSError, subprocess.TimeoutExpired):
         return set()

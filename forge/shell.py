@@ -10,6 +10,9 @@ from __future__ import annotations
 
 import os
 import subprocess
+import threading
+import time
+from collections.abc import Callable
 from dataclasses import dataclass
 
 
@@ -92,6 +95,115 @@ class ShellManager:
                 stderr=f"Error executing command: {e}",
                 exit_code=-1,
             )
+
+    def run_live(
+        self,
+        command: str,
+        on_output: Callable[[str], None] | None = None,
+        is_cancelled: Callable[[], bool] | None = None,
+    ) -> CommandResult:
+        """Execute a command with real-time streaming output.
+
+        Uses Popen + a reader thread so each line of stdout/stderr is
+        delivered to *on_output* as it arrives.  The main thread polls
+        for completion, checking *is_cancelled* every 0.5 s.
+
+        Timeout is **idle-based**: the process is only killed if it
+        produces no output for *self.timeout* seconds.  As long as
+        output keeps flowing the command runs indefinitely.
+        """
+        stripped = command.strip()
+
+        # cd is handled in-process
+        if stripped == "cd" or stripped.startswith("cd "):
+            result = self._handle_cd(stripped)
+            if on_output and result.stdout:
+                on_output(result.stdout)
+            return result
+
+        env = {**os.environ, "TERM": "dumb", "PYTHONUNBUFFERED": "1"}
+
+        try:
+            proc = subprocess.Popen(
+                stripped,
+                shell=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                stdin=subprocess.DEVNULL,
+                text=True,
+                bufsize=1,
+                cwd=self.cwd,
+                env=env,
+            )
+        except Exception as e:
+            return CommandResult(
+                stdout="", stderr=f"Error executing command: {e}", exit_code=-1,
+            )
+
+        output_lines: list[str] = []
+        # Shared mutable timestamp; updated by the reader thread each
+        # time a line arrives so the main loop can detect idle hangs.
+        last_activity = [time.monotonic()]
+
+        def _reader() -> None:
+            assert proc.stdout is not None
+            try:
+                for raw_line in proc.stdout:
+                    line = raw_line.rstrip("\n")
+                    output_lines.append(line)
+                    last_activity[0] = time.monotonic()
+                    if on_output:
+                        on_output(line)
+            except ValueError:
+                pass  # stdout closed after kill
+
+        reader = threading.Thread(target=_reader, daemon=True)
+        reader.start()
+
+        # Poll for completion — only timeout when idle (no output)
+        timed_out = False
+        cancelled = False
+        while True:
+            if is_cancelled and is_cancelled():
+                proc.kill()
+                cancelled = True
+                break
+
+            idle = time.monotonic() - last_activity[0]
+            if idle > self.timeout:
+                proc.kill()
+                timed_out = True
+                break
+
+            try:
+                proc.wait(timeout=0.5)
+                break  # process finished normally
+            except subprocess.TimeoutExpired:
+                continue
+
+        reader.join(timeout=5)
+
+        full_output = "\n".join(output_lines)
+
+        if cancelled:
+            return CommandResult(
+                stdout=self._truncate(full_output),
+                stderr="Cancelled by user.",
+                exit_code=-1,
+            )
+        if timed_out:
+            return CommandResult(
+                stdout=self._truncate(full_output),
+                stderr=f"Command timed out (no output for {self.timeout}s).",
+                exit_code=-1,
+                timed_out=True,
+            )
+
+        return CommandResult(
+            stdout=self._truncate(full_output),
+            stderr="",
+            exit_code=proc.returncode,
+        )
 
     def _handle_cd(self, command: str) -> CommandResult:
         """Handle cd commands by updating virtual CWD."""

@@ -18,3 +18,5 @@ config.toml
 
 # Logs
 *.log
+# Forge AI project memory
+.forge-memory/
